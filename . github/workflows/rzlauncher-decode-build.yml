@@ -1,0 +1,76 @@
+name: RZ Launcher - Decode and Baseline Build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "input/rzlauncher.apk"
+      - ".github/workflows/rzlauncher-decode-build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  decode-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Android APK tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apktool zipalign apksigner aapt
+
+      - name: Check input APK
+        run: |
+          test -s input/rzlauncher.apk || {
+            echo "::error::File input/rzlauncher.apk belum diunggah."
+            exit 1
+          }
+          mkdir -p work output
+
+      - name: Record original APK information
+        run: |
+          sha256sum input/rzlauncher.apk | tee output/original-sha256.txt
+          aapt dump badging input/rzlauncher.apk | tee output/original-badging.txt
+          apksigner verify --verbose --print-certs input/rzlauncher.apk \
+            | tee output/original-signature.txt
+
+      - name: Decode APK resources and manifest
+        run: |
+          apktool d -f input/rzlauncher.apk -o work/rzlauncher-decoded
+          zip -qr output/rzlauncher-decoded-source.zip work/rzlauncher-decoded
+
+      - name: Rebuild unchanged baseline (diagnostic only)
+        continue-on-error: true
+        run: |
+          apktool b work/rzlauncher-decoded -o output/rzlauncher-unsigned-baseline.apk
+          zipalign -p -f 4 output/rzlauncher-unsigned-baseline.apk output/rzlauncher-aligned-baseline.apk
+          keytool -genkeypair -v \
+            -keystore work/test-release.jks \
+            -storepass android123 \
+            -keypass android123 \
+            -alias rzlauncher \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=RZ Launcher Test, OU=Build, O=Local, L=NA, S=NA, C=ID"
+          apksigner sign \
+            --ks work/test-release.jks \
+            --ks-key-alias rzlauncher \
+            --ks-pass pass:android123 \
+            --key-pass pass:android123 \
+            --out output/rzlauncher-baseline-test-signed.apk \
+            output/rzlauncher-aligned-baseline.apk
+          apksigner verify --verbose output/rzlauncher-baseline-test-signed.apk
+
+      - name: Upload analysis and baseline artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RZ-Launcher-Decode-Analysis
+          path: |
+            output/
+          if-no-files-found: warn
+          retention-days: 14
+          
